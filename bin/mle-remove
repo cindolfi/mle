@@ -1,0 +1,41 @@
+#!/usr/bin/python3
+# PYTHON_ARGCOMPLETE_OK
+
+import argparse
+import os.path
+import glob
+import warnings
+
+import mle
+import mle.utils
+import mle.error
+
+
+def main():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('names',
+                        nargs=argparse.REMAINDER)
+
+    mle.utils.autocomplete(parser)
+    args = parser.parse_args()
+
+    try:
+        for name in args.names:
+            name = mle.utils.clean_name(name)
+            try:
+                mle.Environment(name).destroy()
+            except mle.EnvironmentNotFoundError as error:
+                mle.error.handle(error)
+
+    except (KeyboardInterrupt, BrokenPipeError):
+        pass
+    except Exception as error:
+        return mle.error.handle(error)
+
+
+
+
+if __name__ == '__main__':
+    exit(main())
+

@@ -1,0 +1,68 @@
+#!/usr/bin/python3
+# PYTHON_ARGCOMPLETE_OK
+
+import argparse
+
+import mle
+
+
+def main():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('name',
+                        nargs='?',
+                        type=mle.utils.clean_name,
+                        default=None)
+
+    group = parser.add_mutually_exclusive_group()
+    group.required = True
+
+    group.add_argument('--all',
+                       action='store_true')
+
+    group.add_argument('--models',
+                       nargs='*',
+                       type=int)
+
+    group.add_argument('--others',
+                       action='store_true')
+
+    group.add_argument('--current',
+                       action='store_true')
+
+    mle.utils.autocomplete(parser)
+    args = parser.parse_args()
+
+    try:
+        environ = mle.Environment(args.name)
+
+        if args.all:
+            environ.discard_all_models()
+
+        elif args.others:
+            if environ.current_model is not None:
+                environ.discard_other_models(environ.current_model)
+
+        elif args.current:
+            if environ.current_model is not None:
+                environ.discard_model(environ.current_model)
+
+        elif args.models:
+            environ.discard_models(list(set(args.models)))
+
+    except (KeyboardInterrupt, BrokenPipeError):
+        pass
+    except Exception as error:
+        return mle.error.handle(error)
+
+
+
+
+if __name__ == '__main__':
+    exit(main())
+
+
+
+
+
+

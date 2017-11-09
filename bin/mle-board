@@ -1,0 +1,135 @@
+#!/usr/bin/python3
+# PYTHON_ARGCOMPLETE_OK
+
+import argparse
+
+import mle
+from mle import tensorboard
+
+
+def main():
+    parser = argparse.ArgumentParser()
+
+    command_parsers = parser.add_subparsers(dest='command')
+    command_parsers.required = True
+
+    #   start
+    start_parser = command_parsers.add_parser('start',
+                                              help='start tensor board for the '
+                                                   'current environment')
+
+    start_parser.add_argument('--host',
+                              default='127.0.0.1',
+                              help='ip address (default: 127.0.0.1)')
+
+    start_parser.add_argument('--port',
+                              default='6006',
+                              help='ip port (default: 6006)')
+
+    start_parser.add_argument('--reload-interval',
+                              dest='reload_interval',
+                              type=int,
+                              default=10,
+                              help='minutes between reloading event data (default: 10)')
+
+    start_parser.add_argument('--purge',
+                              action='store_true',
+                              help='purge orphaned data')
+
+    start_parser.set_defaults(function=start)
+
+    #   stop
+    stop_parser = command_parsers.add_parser('stop',
+                                             help='stop tensor board')
+    stop_parser.set_defaults(function=stop)
+
+    #   status
+    status_parser = command_parsers.add_parser('status',
+                                               help='print the running status')
+    status_parser.set_defaults(function=status)
+
+    #   restart
+    restart_parser = command_parsers.add_parser('restart',
+                                                help='restart tensor board')
+    restart_parser.set_defaults(function=restart)
+
+    #   suspend
+    suspend_parser = command_parsers.add_parser('suspend',
+                                                help='temporarily stop tensor board')
+    suspend_parser.set_defaults(function=suspend)
+
+    #   resume
+    resume_parser = command_parsers.add_parser('resume',
+                                               help='resume from suspension')
+
+    resume_parser.add_argument('--purge',
+                               action='store_true',
+                               help='purge orphaned data')
+
+    resume_parser.set_defaults(function=resume)
+
+    #   is_running
+    is_running_parser = command_parsers.add_parser('running',
+                                                   help='exits successfully if '
+                                                        'tensor board is running')
+    is_running_parser.set_defaults(function=is_running)
+
+    mle.utils.autocomplete(parser)
+    args, pass_through_args = parser.parse_known_args()
+
+    try:
+        return args.function(args, pass_through_args)
+    except (KeyboardInterrupt, BrokenPipeError):
+        pass
+    except Exception as error:
+        return mle.error.handle(error)
+
+
+
+
+def start(args, pass_through_args):
+    tensorboard.start(logdir=str(mle.Environment().path),
+                      host=args.host,
+                      port=args.port,
+                      reload_interval=args.reload_interval,
+                      purge=args.purge,
+                      cmdargs=pass_through_args)
+
+
+def stop(args, pass_through_args):
+    tensorboard.stop()
+
+
+def status(args, pass_through_args):
+    print(tensorboard.status())
+
+
+def restart(args, pass_through_args):
+    tensorboard.restart()
+
+
+def suspend(args, pass_through_args):
+    try:
+        tensorboard.suspend()
+    except tensorboard.TensorBoardError as error:
+        if error.is_running:
+            raise
+
+
+def resume(args, pass_through_args):
+    try:
+        tensorboard.resume(purge=args.purge)
+    except tensorboard.TensorBoardError as error:
+        if not error.is_running:
+            raise
+
+
+def is_running(args, pass_through_args):
+    if not tensorboard.is_running():
+        return -1
+
+
+
+
+if __name__ == '__main__':
+    exit(main())

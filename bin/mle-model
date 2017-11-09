@@ -1,0 +1,131 @@
+#!/usr/bin/python3
+# PYTHON_ARGCOMPLETE_OK
+
+import argparse
+
+import mle
+
+
+def main():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--environ',
+                        default=None)
+
+    command_parsers = parser.add_subparsers(dest='command')
+    command_parsers.required = True
+
+    #   create
+    create_parser = command_parsers.add_parser('create')
+
+    create_parser.add_argument('-a', '--activate',
+                               action='store_true',
+                               required=False)
+
+    create_parser.set_defaults(function=create)
+
+    #   activate
+    activate_parser = command_parsers.add_parser('activate', aliases=['act'])
+
+    activate_parser.add_argument('model',
+                                 type=int)
+
+    activate_parser.set_defaults(function=activate)
+
+    #   remove
+    remove_parser = command_parsers.add_parser('remove', aliases=['rm'])
+
+    remove_parser.add_argument('model',
+                               type=int)
+
+    remove_parser.set_defaults(function=remove)
+
+    #   summary
+    summary_parser = command_parsers.add_parser('summary', aliases=['sm'])
+
+    summary_parser.add_argument('model',
+                                nargs='?',
+                                type=int,
+                                default=None)
+
+    summary_parser.set_defaults(function=summary)
+
+    #   log
+    log_parser = command_parsers.add_parser('log')
+
+    log_parser.add_argument('model',
+                            nargs='?',
+                            type=int,
+                            default=None)
+
+    log_name_group = log_parser.add_mutually_exclusive_group()
+    log_name_group.add_argument('--train',
+                                dest='name',
+                                action='store_const',
+                                const='train')
+
+    log_name_group.add_argument('--eval',
+                                dest='name',
+                                action='store_const',
+                                const='eval')
+
+    log_name_group.add_argument('--name')
+
+    log_parser.set_defaults(function=log, name=None)
+
+
+    mle.utils.autocomplete(parser)
+    args = parser.parse_args()
+
+    try:
+        environ = mle.Environment(args.environ)
+        return args.function(environ, args)
+    except (KeyboardInterrupt, BrokenPipeError):
+        pass
+    except Exception as error:
+        return mle.error.handle(error)
+
+
+
+
+
+def create(environ, args):
+    model = environ.create_model()
+    if args.activate:
+        environ.current_model = model
+
+
+def activate(environ, args):
+    environ.current_model = args.model
+
+
+def remove(environ, args):
+    environ.discard_model(args.model)
+
+
+def summary(environ, args):
+    summary_path = environ.model_path(environ.get('summary_file', 'summary'),
+                                      model=args.model)
+    with summary_path.open('r') as file:
+        print(file.read())
+
+
+def log(environ, args):
+    if args.name is None:
+        args.name = environ.get('default_log_file', 'train.log')
+    log_path = environ.log_path(args.name, model=args.model)
+    log_path = log_path.with_suffix('.log')
+    with log_path.open('r') as file:
+        print(file.read())
+
+
+
+
+if __name__ == '__main__':
+    exit(main())
+
+
+
+
+
+

@@ -1,0 +1,38 @@
+#!/usr/bin/python3
+# PYTHON_ARGCOMPLETE_OK
+import argparse
+
+import mle
+import mle.cmdline
+import mle.error
+import mle.edit
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Edit an environment configuration file',
+                                     parents=[mle.cmdline.environment_parser(),
+                                              mle.cmdline.config_file_parser()])
+
+    mle.cmdline.autocomplete(parser)
+    args = parser.parse_args()
+
+    try:
+        config, environment = args.create_config(args)
+        mle.edit.open_editor(config.filepath, editor_key='config.editor')
+
+    except KeyboardInterrupt:
+        pass
+    except Exception as error:
+        return mle.error.handle(error)
+
+
+
+
+if __name__ == '__main__':
+    exit(main())
+
+
+
+
+
+

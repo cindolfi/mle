@@ -1,51 +1,51 @@
 #!/usr/bin/python3
 # PYTHON_ARGCOMPLETE_OK
-
 import argparse
 
 import mle
+import mle.cmdline
+import mle.error
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(parents=[mle.cmdline.environment_parser()])
 
-    parser.add_argument('name',
-                        nargs='?',
-                        type=mle.utils.clean_name,
-                        default=None)
+    group = parser.add_mutually_exclusive_group(required=True)
 
-    group = parser.add_mutually_exclusive_group()
-    group.required = True
+    group.add_argument('-a', '--all',
+                       action='store_true',
+                       help='remove all models')
 
-    group.add_argument('--all',
-                       action='store_true')
-
-    group.add_argument('--models',
+    group.add_argument('-m', '--models',
                        nargs='*',
-                       type=int)
+                       type=int,
+                       help='remove a set of models')
 
-    group.add_argument('--others',
-                       action='store_true')
+    group.add_argument('-o', '--others',
+                       action='store_true',
+                       help='remove all models except the active model')
 
-    group.add_argument('--current',
-                       action='store_true')
+    group.add_argument('-c', '--active',
+                       action='store_true',
+                       help='remove the active model')
 
-    mle.utils.autocomplete(parser)
+    mle.cmdline.autocomplete(parser)
     args = parser.parse_args()
 
     try:
-        environ = mle.Environment(args.name)
+        environ = mle.Environment(args.environ)
 
         if args.all:
-            environ.discard_all_models()
+            environ.discard_models(environ.models)
 
         elif args.others:
-            if environ.current_model is not None:
-                environ.discard_other_models(environ.current_model)
+            others = [model for model in environ.models
+                      if model != environ.active_model]
+            environ.discard_models(others)
+            #environ.discard_other_models(environ.active_model)
 
-        elif args.current:
-            if environ.current_model is not None:
-                environ.discard_model(environ.current_model)
+        elif args.active:
+            environ.discard_model(environ.active_model)
 
         elif args.models:
             environ.discard_models(list(set(args.models)))

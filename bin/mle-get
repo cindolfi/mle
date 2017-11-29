@@ -1,0 +1,206 @@
+#!/usr/bin/python3
+# PYTHON_ARGCOMPLETE_OK
+"""
+Get configuration variables
+
+mle get
+mle get [--environ ENVIRON] name
+
+"""
+import argparse
+
+import mle
+import mle.cmdline
+import mle.error
+from mle.colored import print
+
+
+COLORS = {mle.LOCAL_CONFIG_FILENAME: 'blue',
+          mle.GLOBAL_CONFIG_FILENAME: 'yellow',
+          mle.SYSTEM_CONFIG_FILENAME: 'green',
+          mle.MODEL_CONFIG_FILENAME: 'magenta',
+          'defaults': 'cyan'}
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Get environment variables',
+                                     parents=[mle.cmdline.environment_parser(),
+                                              mle.cmdline.no_colored_text_parser(),
+                                              mle.cmdline.config_file_parser()])
+    parser.add_argument('name',
+                        nargs='?',
+                        default='.*',
+                        help='a regular expression for the variable name')
+
+    parser.add_argument('--group',
+                        action='store_true',
+                        help='group variables by configuration file')
+
+    parser.add_argument('--show-file',
+                        action='store_true',
+                        help='print the path of the file containing the variable')
+
+    parser.add_argument('--no-defaults',
+                        dest='include_defaults',
+                        action='store_false',
+                        help='do not show defaults')
+
+    parser.add_argument('--get-colors',
+                        dest='get_colors',
+                        action='store_true',
+                        help='get the colors used to display '
+                             'the configuration level')
+
+    mle.cmdline.autocomplete(parser)
+    args = parser.parse_args()
+
+    try:
+        if args.get_colors:
+            print_colors()
+        else:
+            config, environment = args.create_config(args)
+
+            if environment is not None:
+                print('environment: {}'.format(environment.directory), end=' ')
+                if environment.constructed_from[0] in ('path', 'default_directory'):
+                    print()
+                else:
+                    print('({})'.format(environment.constructed_from[0]))
+                print('-' * 80)
+
+            try:
+                import re
+                if args.group:
+                    print_groups(re.compile(args.name), config, args)
+                else:
+                    print_list(re.compile(args.name), config, args)
+
+            except KeyError as error:
+                error.args = (error.args[0] + ' is not set',)
+                raise error
+
+    except KeyboardInterrupt:
+        pass
+    except Exception as error:
+        raise
+        return mle.error.handle(error)
+
+
+
+
+def print_list(key_regex, config, args):
+    configs = dict()
+    def map_key_to_config(key, config):
+        configs[key] = config
+
+    find_key_config_pairs(map_key_to_config, config, key_regex, args)
+
+    if not configs:
+        raise KeyError(key_regex.pattern)
+
+    for key in sorted(configs):
+        config = configs[key]
+        color = get_color(config)
+
+        if args.show_file:
+            print('{}: '.format(config_path(config)), color=color, end='')
+        print('{} = {}'.format(key, config[key]), color=color)
+
+
+def print_groups(key_regex, config, args):
+    groups = dict()
+    def add_to_group(key, config):
+        groups.setdefault(id(config), set()).add(key)
+
+    find_key_config_pairs(add_to_group, config, key_regex, args)
+
+    if not groups:
+        raise KeyError(key_regex.pattern)
+
+    indent = 4 * ' ' if args.show_file else ''
+    def print_group(config):
+        color = get_color(config)
+        if args.show_file:
+            print('{}:'.format(config_path(config)), color=color)
+
+        keys = groups.get(id(config), set())
+        for key in sorted(keys):
+            print('{}{} = {}'.format(indent, key, config[key]), color=color)
+
+    while isinstance(config, mle.Configuration):
+        print_group(config)
+        config = config.defaults
+    print_group(config)
+
+
+def find_key_config_pairs(add_pair, config, key_regex, args, found_keys=None):
+    if found_keys is None:
+        found_keys = set()
+
+    if isinstance(config, mle.Configuration):
+        for key in config.variables:
+            if key not in found_keys and key_regex.match(key):
+                add_pair(key, config)
+                found_keys.add(key)
+
+        if args.include_defaults:
+            find_key_config_pairs(add_pair, config.defaults,
+                                  key_regex, args, found_keys)
+    else:
+        for key in config:
+            if key not in found_keys and key_regex.match(key):
+                add_pair(key, config)
+                found_keys.add(key)
+
+
+def get_color(config):
+    try:
+        color = COLORS[config.filepath.name]
+    except KeyError:
+        #   the system configuration uses a full path
+        color = COLORS[str(config.filepath)]
+    except AttributeError:
+        color = COLORS['defaults']
+    return color
+
+
+def config_path(config):
+    if config is None:
+        result = 'defaults'
+    else:
+        import pathlib
+        try:
+            result = str(config.filepath.relative_to(pathlib.Path.cwd()))
+        except ValueError:
+            result = str(config.filepath)
+        except AttributeError:
+            result = 'defaults'
+    return result
+
+
+def print_colors():
+    color = COLORS[mle.LOCAL_CONFIG_FILENAME]
+    print('local: {}'.format(color), color=color)
+
+    color = COLORS[mle.GLOBAL_CONFIG_FILENAME]
+    print('global: {}'.format(color), color=color)
+
+    color = COLORS[mle.SYSTEM_CONFIG_FILENAME]
+    print('system: {}'.format(color), color=color)
+
+    color = COLORS['defaults']
+    print('defaults: {}'.format(color), color=color)
+
+
+
+
+
+
+if __name__ == '__main__':
+    exit(main())
+
+
+
+
+
+

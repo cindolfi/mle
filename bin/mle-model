@@ -1,90 +1,159 @@
 #!/usr/bin/python3
 # PYTHON_ARGCOMPLETE_OK
-
 import argparse
 
 import mle
+import mle.cmdline
+import mle.error
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    #   parent for all model command parsers
+    model_parser = argparse.ArgumentParser(parents=[mle.cmdline.environment_parser()],
+                                           add_help=False)
 
-    parser.add_argument('--environ',
-                        default=None)
+    model_parser.add_argument('--prefix',
+                              default=None,
+                              help='model directory prefix')
+
+    #   parent for command parsers that take a defaulted model id
+    default_model_parser = argparse.ArgumentParser(parents=[model_parser],
+                                                   add_help=False)
+    default_model_parser.add_argument('model',
+                                      nargs='?',
+                                      type=int,
+                                      default=None,
+                                      help='the model environment identifier '
+                                           '(default: the active model)')
+
+    parser = argparse.ArgumentParser(description='Model environment commands',
+                                     prog='mle model')
 
     command_parsers = parser.add_subparsers(dest='command')
     command_parsers.required = True
 
+    #   ------------------------------------------------------------------------
     #   create
-    create_parser = command_parsers.add_parser('create')
-
+    CREATE_DESCRIPTION = 'Create a model environment'
+    create_parser = command_parsers.add_parser('create',
+                                               description=CREATE_DESCRIPTION,
+                                               help=CREATE_DESCRIPTION.lower(),
+                                               parents=[model_parser])
     create_parser.add_argument('-a', '--activate',
                                action='store_true',
-                               required=False)
+                               help='activate the new model')
 
     create_parser.set_defaults(function=create)
 
-    #   activate
-    activate_parser = command_parsers.add_parser('activate', aliases=['act'])
+    #   ------------------------------------------------------------------------
+    #   remove
+    REMOVE_DESCRIPTION = 'Remove a model environment'
+    remove_parser = command_parsers.add_parser('remove',
+                                               description=REMOVE_DESCRIPTION,
+                                               help=REMOVE_DESCRIPTION.lower(),
+                                               aliases=['rm'],
+                                               parents=[default_model_parser])
+    remove_parser.set_defaults(function=remove)
 
+    #   ------------------------------------------------------------------------
+    #   activate
+    ACTIVATE_DESCRIPTION = 'Activate a model environment'
+    activate_parser = command_parsers.add_parser('activate',
+                                                 description=ACTIVATE_DESCRIPTION,
+                                                 help=ACTIVATE_DESCRIPTION.lower(),
+                                                 aliases=['act'],
+                                                 parents=[model_parser])
     activate_parser.add_argument('model',
-                                 type=int)
+                                 type=int,
+                                 help='the model environment identifier')
 
     activate_parser.set_defaults(function=activate)
 
-    #   remove
-    remove_parser = command_parsers.add_parser('remove', aliases=['rm'])
-
-    remove_parser.add_argument('model',
-                               type=int)
-
-    remove_parser.set_defaults(function=remove)
-
+    #   ------------------------------------------------------------------------
     #   summary
-    summary_parser = command_parsers.add_parser('summary', aliases=['sm'])
-
-    summary_parser.add_argument('model',
-                                nargs='?',
-                                type=int,
-                                default=None)
+    SUMMARY_DESCRIPTION = 'View a model environment\'s summary file'
+    summary_parser = command_parsers.add_parser('summary',
+                                                description=SUMMARY_DESCRIPTION,
+                                                help=SUMMARY_DESCRIPTION.lower(),
+                                                aliases=['sm'],
+                                                parents=[default_model_parser])
+    summary_parser.add_argument('-e', '--edit',
+                                action='store_true',
+                                help='open the summary file')
 
     summary_parser.set_defaults(function=summary)
 
+    #   ------------------------------------------------------------------------
     #   log
-    log_parser = command_parsers.add_parser('log')
-
-    log_parser.add_argument('model',
-                            nargs='?',
-                            type=int,
-                            default=None)
+    LOG_DESCRIPTION = 'View a model environment\'s log file'
+    log_parser = command_parsers.add_parser('log',
+                                            description=LOG_DESCRIPTION,
+                                            help=LOG_DESCRIPTION.lower(),
+                                            parents=[default_model_parser,
+                                                     mle.cmdline.no_colored_text_parser()])
+    log_parser.add_argument('-e', '--edit',
+                            action='store_true',
+                            help='open the log file using the editor '
+                                 'given by the OS environment variable LOG_EDITOR '
+                                 'or configuration variable \'log.editor\'')
 
     log_name_group = log_parser.add_mutually_exclusive_group()
     log_name_group.add_argument('--train',
-                                dest='name',
+                                dest='filename',
                                 action='store_const',
-                                const='train')
+                                const='train',
+                                help='show or edit the training log '
+                                     '(equivalent to --name train)')
 
     log_name_group.add_argument('--eval',
-                                dest='name',
+                                dest='filename',
                                 action='store_const',
-                                const='eval')
+                                const='eval',
+                                help='show or edit the evaluation log '
+                                     '(equivalent to --name eval)')
 
-    log_name_group.add_argument('--name')
+    log_name_group.add_argument('--name',
+                                dest='filename',
+                                help='show or edit a specified log file '
+                                     '(default: file named by the configuration '
+                                     'variable \'model.log.default\')')
 
-    log_parser.set_defaults(function=log, name=None)
+    log_parser.set_defaults(function=log, filename=None)
 
+    #   ------------------------------------------------------------------------
+    #   file
+    FILE_DESCRIPTION = 'View a generic model environment file'
+    path_parser = command_parsers.add_parser('file',
+                                             description=FILE_DESCRIPTION,
+                                             help=FILE_DESCRIPTION.lower(),
+                                             parents=[default_model_parser])
+    path_parser.add_argument('filename',
+                             help='the name of the file')
 
-    mle.utils.autocomplete(parser)
+    path_parser.add_argument('-e', '--edit',
+                             action='store_true',
+                             help='open the file in an editor')
+
+    path_parser.add_argument('-p', '--path',
+                             action='store_true',
+                             help='print the absolute path')
+
+    path_parser.set_defaults(function=file)
+
+    mle.cmdline.autocomplete(parser)
     args = parser.parse_args()
 
     try:
         environ = mle.Environment(args.environ)
+        if args.prefix is not None:
+            environ['model.prefix'] = args.prefix
+
         return args.function(environ, args)
     except (KeyboardInterrupt, BrokenPipeError):
         pass
     except Exception as error:
+        raise
         return mle.error.handle(error)
-
 
 
 
@@ -92,37 +161,70 @@ def main():
 def create(environ, args):
     model = environ.create_model()
     if args.activate:
-        environ.current_model = model
-
-
-def activate(environ, args):
-    environ.current_model = args.model
+        environ.active_model = model
 
 
 def remove(environ, args):
     environ.discard_model(args.model)
 
 
+def activate(environ, args):
+    environ.active_model = args.model
+
+
 def summary(environ, args):
-    summary_path = environ.model_path(environ.get('summary_file', 'summary'),
-                                      model=args.model)
-    with summary_path.open('r') as file:
-        print(file.read())
+    model = environ.model(args.model)
+    summary_path = model.summary_path
+
+    if args.edit:
+        import mle.edit
+        mle.edit.open_editor(model.summary_path, editor_key='editor', config=model)
+    else:
+        with model.summary_path.open('r') as file:
+            print(file.read())
 
 
 def log(environ, args):
-    if args.name is None:
-        args.name = environ.get('default_log_file', 'train.log')
-    log_path = environ.log_path(args.name, model=args.model)
-    log_path = log_path.with_suffix('.log')
-    with log_path.open('r') as file:
-        print(file.read())
+    model = environ.model(args.model)
+    log_path = model.log_path(args.filename)
+    if not log_path.exists():
+        log_path = log_path.with_suffix(model['log.extension'])
+
+    if args.edit:
+        import mle.edit
+        mle.edit.open_editor(log_path, editor_key='log.editor', config=model)
+    else:
+        import mle.logging
+        printer = mle.logging.LogPrinter()
+        printer.print(log_path)
+
+
+def file(environ, args):
+    import mle.edit
+    model = environ.model(args.model)
+    filepath = model.path(args.filename)
+
+    if args.edit:
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            filepath.touch()
+        except FileExistsError:
+            pass
+
+        mle.edit.open_editor(filepath, config=model)
+    elif args.path:
+        print(filepath)
+    else:
+        with filepath.open('r') as file:
+            print(file.read())
 
 
 
 
 if __name__ == '__main__':
     exit(main())
+
+
 
 
 

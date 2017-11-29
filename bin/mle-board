@@ -1,9 +1,10 @@
 #!/usr/bin/python3
 # PYTHON_ARGCOMPLETE_OK
-
 import argparse
 
 import mle
+import mle.cmdline
+import mle.error
 from mle import tensorboard
 
 
@@ -74,7 +75,7 @@ def main():
                                                         'tensor board is running')
     is_running_parser.set_defaults(function=is_running)
 
-    mle.utils.autocomplete(parser)
+    mle.cmdline.autocomplete(parser)
     args, pass_through_args = parser.parse_known_args()
 
     try:
@@ -88,7 +89,7 @@ def main():
 
 
 def start(args, pass_through_args):
-    tensorboard.start(logdir=str(mle.Environment().path),
+    tensorboard.start(logdir=str(mle.Environment.find(path)),
                       host=args.host,
                       port=args.port,
                       reload_interval=args.reload_interval,

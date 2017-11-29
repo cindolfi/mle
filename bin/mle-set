@@ -1,0 +1,185 @@
+#!/usr/bin/python3
+# PYTHON_ARGCOMPLETE_OK
+import argparse
+import re
+
+import mle
+import mle.cmdline
+import mle.error
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Set an environment variable',
+                                     parents=[mle.cmdline.environment_parser(),
+                                              mle.cmdline.config_file_parser()])
+    parser.add_argument('name',
+                        help='the name of the variable')
+
+    parser.add_argument('value',
+                        nargs='?',
+                        help='the value of the variable')
+
+    set_command_options = parser.add_mutually_exclusive_group()
+
+    set_command_options.add_argument('--unset',
+                                     action='store_true',
+                                     help='remove the variable from '
+                                          'the configuration')
+
+    set_command_options.add_argument('--add',
+                                     action='store_true',
+                                     help='add the value to a collection')
+
+    set_command_options.add_argument('--remove',
+                                     action='store_true',
+                                     help='remove the value from a collection')
+
+    set_command_options.add_argument('--clear',
+                                     action='store_true',
+                                     help='clear all values from a collection')
+
+    set_command_options.add_argument('--if-not-set',
+                                     dest='if_not_set',
+                                     action='store_true',
+                                     help='set the value only if the '
+                                          'variable has not already been set')
+
+    #   options used to cast/convert values
+    type_options = parser.add_mutually_exclusive_group()
+
+    type_options.add_argument('--int',
+                              dest='type',
+                              action='store_const',
+                              const=int,
+                              help='convert the value to an integer')
+
+    type_options.add_argument('--float',
+                              dest='type',
+                              action='store_const',
+                              const=float,
+                              help='convert the value to a floating point number')
+
+    type_options.add_argument('--complex',
+                              dest='type',
+                              action='store_const',
+                              const=complex,
+                              help='convert the value to a complex number')
+
+    type_options.add_argument('--bool',
+                              dest='type',
+                              action='store_const',
+                              const=bool,
+                              help='convert the value to a boolean')
+
+    type_options.add_argument('--str',
+                              dest='type',
+                              action='store_const',
+                              const=str,
+                              help='convert the value to a string')
+
+    parser.set_defaults(type=convert_value)
+
+    mle.cmdline.autocomplete(parser)
+    args = parser.parse_args()
+
+    try:
+        config, _ = args.create_config(args)
+
+        try:
+            set_value_from_args(config, args)
+        except KeyError as error:
+            error.args = (error.args[0] + ' is not set',)
+            raise error
+
+    except KeyboardInterrupt:
+        pass
+    except Exception as error:
+        return mle.error.handle(error)
+
+
+
+
+class NotCollectionError(ValueError):
+    def __init__(self, name):
+        super().__init__('{} is not a collection'.format(name))
+
+
+def set_value_from_args(config, args):
+    config.autosave = False
+
+    value = args.type(args.value) if args.value is not None else None
+
+    if args.add:
+        collection = config[args.name]
+        try:
+            collection.append(value)
+        except AttributeError:
+            try:
+                collection.add(value)
+            except AttributeError:
+                raise NotCollectionError(args.name) from None
+
+        config[args.name] = collection
+
+    elif args.remove:
+        collection = config[args.name]
+        try:
+            collection.remove(value)
+        except AttributeError:
+            try:
+                collection.discard(value)
+            except AttributeError:
+                raise NotCollectionError(args.name) from None
+
+        config[args.name] = collection
+
+    elif args.clear:
+        collection = config[args.name]
+        try:
+            collection.clear()
+        except AttributeError:
+            raise NotCollectionError(args.name) from None
+
+        config[args.name] = collection
+
+    elif args.unset:
+        del config[args.name]
+
+    elif args.if_not_set:
+        config.setdefault(args.name, value)
+
+    else:
+        config[args.name] = value
+
+    config.save()
+
+
+def convert_value(value):
+    if re.match(r'^true|false$', value, flags=re.IGNORECASE):
+        value = bool(value)
+    elif re.match(r'^none$', value, flags=re.IGNORECASE):
+        value = None
+    elif re.match(r'^[-+]?[0-9]+$', value):
+        value = int(value)
+    elif re.match(r'^[-+]?[0-9]*\.?[0-9]+$', value):
+        value = float(value)
+    elif re.match(r'\[\]$', value):
+        value = list()
+    elif re.match(r'\[\]$', value):
+        value = list()
+    elif re.match(r'\{\}$', value):
+        value = set()
+
+    return value
+
+
+
+
+if __name__ == '__main__':
+    exit(main())
+
+
+
+
+
+

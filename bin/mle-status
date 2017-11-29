@@ -1,51 +1,251 @@
 #!/usr/bin/python3
 # PYTHON_ARGCOMPLETE_OK
-
 import argparse
-import warnings
+import datetime
+import math
+import re
+import textwrap
 
 import mle
+import mle.colored
+import mle.error
+import mle.cmdline
+from mle.colored import print
+
+
+ACTIVE_COLOR='blue'
+INACTIVE_COLOR='yellow'
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-n', '--name',
-                        type=mle.utils.clean_name,
-                        default=None)
+    parser = argparse.ArgumentParser(description='Show the status of the environment',
+                                     parents=[mle.cmdline.environment_parser(),
+                                              mle.cmdline.no_colored_text_parser()])
 
-    mle.utils.autocomplete(parser)
+    #   ------------------------------------------------------------------------
+    #   model selection options
+    models_options = parser.add_argument_group('Model Selection')
+    models_options = models_options.add_mutually_exclusive_group()
+
+    models_options.add_argument('-m', '--models',
+                                dest='models',
+                                nargs='*',
+                                type=int,
+                                metavar='MODEL IDENTIFIER',
+                                help='print the status of a set of models')
+
+    models_options.add_argument('-c', '--active',
+                                action='store_true',
+                                help='print the status of the active model')
+
+    models_options.add_argument('-a', '--all',
+                                action='store_true',
+                                help='print the status of all models')
+
+    #   ------------------------------------------------------------------------
+    #   file filter options
+    file_filter_options = parser.add_argument_group('File Filter')
+
+    file_filter_options.add_argument('--files-glob',
+                                     metavar='GLOB',
+                                     default='*',
+                                     help='filter listed files using glob wildcards')
+
+    file_filter_options.add_argument('--files-regex',
+                                     metavar='REGEX',
+                                     default=None,
+                                     help='filter listed files using a regular expression')
+
+    mle.cmdline.autocomplete(parser)
     args = parser.parse_args()
 
     try:
-        metadata = mle.GlobalConfiguration()
+        environ = mle.Environment(args.environ)
 
-        try:
-            environ = mle.Environment(args.name)
-        except mle.EnvironmentNotActiveError as error:
-            environ = None
-
-        print('Environments:')
-        for name in metadata.existing_environment_names:
-            if name == metadata.current:
-                print(mle.utils.colored('   *{}'.format(name), color='blue'))
-            else:
-                print('    {}'.format(name))
-
-        if environ is not None:
-            models = environ.models
+        print('environment: ', end='')
+        print(environ.directory, color=ACTIVE_COLOR, end=' ')
+        if environ.constructed_from[0] in ('cwd', 'MLE_ACTIVE_ENVIRONMENT', 'env.active'):
+            print('({})'.format(environ.constructed_from[0]))
+        else:
             print()
-            print('Models ({}):'.format(environ.name))
-            try:
-                print(mle.utils.colored('    current = {}'.format(environ.current_model), color='blue'))
-            except mle.NoCurrentModelError:
-                print(mle.utils.colored('    current = None', color='blue'))
-            print('    count = {}'.format(len(models)))
-            print('    all = {}'.format(models))
+
+        print_summary(environ)
+
+        if args.active or args.models or args.all:
+            print('details:')
+            details = DetailsPrinter(environ, args)
+
+            if args.active:
+                try:
+                    details.print_active_model()
+                except mle.ModelNotFoundError as error:
+                    return mle.error.handle(error)
+
+            if args.models:
+                details.print_models(args.models)
+
+            if args.all:
+                details.print_all_models()
 
     except (KeyboardInterrupt, BrokenPipeError):
         pass
     except Exception as error:
         return mle.error.handle(error)
+
+
+
+
+
+def print_summary(environ):
+    indent = 4 * ' '
+    print('models ({}): '.format(len(environ.models)))
+    try:
+        active = '{}active = {}'.format(indent, environ.active_model)
+    except mle.ModelNotFoundError:
+        active = '{}active = None'.format(indent)
+    print(active, color=ACTIVE_COLOR)
+    print('{}prefix = {}'.format(indent, environ['model.prefix']))
+
+    identifiers = textwrap.fill('{}ids = {}'.format(indent, environ.models),
+                                initial_indent='',
+                                subsequent_indent=indent + 7 * ' ')
+    print(identifiers)
+
+
+
+
+class DetailsPrinter:
+    def __init__(self, environ, args):
+        self.environ = environ
+        self.size_units = ('B ', 'KB', 'MB', 'GB', 'TB')
+
+        self.file_glob = args.files_glob
+        if args.files_regex:
+            self.file_regex = re.compile(args.files_regex)
+        else:
+            self.file_regex = None
+
+        try:
+            self.active_model_id = environ.active_model.identifier
+        except mle.ModelNotFoundError:
+            self.active_model_id = None
+
+        try:
+            self.identifier_width = min(4, 1 + int(environ.models[-1].identifier))
+        except IndexError:
+            pass
+
+
+    def print_models(self, models):
+        if models:
+            for model in sorted(set(models)):
+                try:
+                    model = self.environ.model(model)
+                except mle.ModelNotFoundError as error:
+                    self.print_separator(None)
+                    mle.error.handle(error)
+                else:
+                    self.print_separator(model)
+                    self.print_details(model)
+
+
+    def print_all_models(self):
+        if self.environ.models:
+            for model in self.environ.models:
+                self.print_separator(model)
+                self.print_details(model)
+        else:
+            print('environment has no models')
+
+
+    def print_active_model(self):
+        model = self.environ.active_model
+        self.print_separator(model)
+        self.print_details(model)
+
+
+    def print_separator(self, model):
+        if model is None or model.identifier != self.active_model_id:
+            separator = '-' * 80
+        else:
+            separator = '=' * 80
+        print(separator)
+
+
+    def print_details(self, model):
+        if model.identifier == self.active_model_id:
+            color = ACTIVE_COLOR
+        else:
+            color = INACTIVE_COLOR
+
+        with mle.colored.printing(color=color):
+            #   --------------------------------------------------------------------
+            #   header
+            header = 'id = {identifier:<{identifier_width}d} {directory}'
+            print(header.format(identifier_width=self.identifier_width,
+                                identifier=model.identifier,
+                                directory=model.directory))
+
+            #   --------------------------------------------------------------------
+            #   configuration
+            print('configuration ({}):'.format(len(model.variables)))
+            for key, value in sorted(model.variables.items(), key=lambda item: item[0]):
+                print('    {} = {}'.format(key, value))
+
+            #   --------------------------------------------------------------------
+            #   summary
+            summary_path = model.summary_path
+            if summary_path.exists():
+                print('summary:', format(summary_path))
+            else:
+                print('summary:')
+
+            #   --------------------------------------------------------------------
+            #   files
+            files = list()
+            for item in model.directory.glob(self.file_glob):
+                if item.is_file() and not item.name.startswith('.') and item != summary_path:
+                    if self.file_regex is None or self.file_regex.match(item.name):
+                        files.append(item)
+            print('files ({}):'.format(len(files)))
+            if files:
+                print('\n'.join(self.file_info(file) for file in files))
+
+            #   --------------------------------------------------------------------
+            #   logs
+            files.clear()
+            for item in model.log_directory.iterdir():
+                if item.is_file():
+                    files.append(item)
+            print('logs ({}):'.format(len(files)))
+            if files:
+                print('\n'.join(self.file_info(file) for file in files))
+
+
+    def file_info(self, file):
+        stat = file.stat()
+        mtime = datetime.datetime.fromtimestamp(stat.st_mtime)
+        size = stat.st_size
+
+        try:
+            order = int(math.log10(size) / 3)
+        except ValueError:
+            order = 0
+
+        size_unit = self.size_units[order]
+        if order >= 1:
+            size = size / (10**(3 * order))
+            size_format='7.3f'
+        else:
+            size_format='7d'
+
+        info = '    {size:{size_format}} {size_unit}  {date} {time}  {name}'
+        return info.format(size=size,
+                           size_unit=size_unit,
+                           size_format=size_format,
+                           date=mtime.date(),
+                           time=mtime.time().strftime('%H:%M:%S'),
+                           name=file.name)
 
 
 

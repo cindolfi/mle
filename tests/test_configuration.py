@@ -1,13 +1,11 @@
 
-
-
-
 import json
 import time
 import itertools
 import string
 import random
 import contextlib
+import inspect
 
 import pytest
 
@@ -15,54 +13,22 @@ import mle
 
 
 
+
 class Callback:
-    def __init__(self):
+    def __init__(self, current, previous):
         self.called = False
         self.frameinfo = None
-
-    def __call__(self, *args, **kwds):
-        self.called = True
-        try:
-            self.call(*args, **kwds)
-        except AssertionError as error:
-            raise AssertionError(self._message(self.frameinfo)) from error
-
-    def call(self):
-        raise NotImplementedError()
-
-    def _message(self, frameinfo):
-        frameinfo = frameinfo._asdict()
-        frameinfo['code_context'] = '\n'.join(frameinfo['code_context'])
-        message = 'incorrect callback argument \norigin: {filename}:{lineno}\n{code_context}'
-        return message.format(**frameinfo)
-
-
-
-
-class ChangeCallback(Callback):
-    def __init__(self, current, previous):
-        super().__init__()
         self.current = current
         self.previous = previous
+        self.actual_current = None
+        self.actual_previous = None
 
-    def call(self, current, previous):
-        assert current == self.current
-        assert previous == self.previous
-
-
-class DeleteCallback(Callback):
-    def __init__(self, value):
-        super().__init__()
-        self.value = value
-
-    def call(self, value):
-        assert value == self.value
+    def __call__(self, current, previous):
+        self.called = True
+        self.actual_current = current
+        self.actual_previous = previous
 
 
-
-
-
-import inspect
 class CallbackChecker:
     def __init__(self):
         self.callbacks = list()
@@ -70,35 +36,41 @@ class CallbackChecker:
         self.unexpected = list()
 
 
-    def assert_called(self, config, event, key, **kwds):
-        previous_frame = inspect.currentframe().f_back
+    def assert_called(self, config, event, key, **values):
+        self._append_callback(config, event, key, values, True)
+
+
+    def assert_not_called(self, config, key):
+        self._append_callback(config, None, key, dict(), False)
+
+
+    def _append_callback(self, config, event, key, values, called):
+        previous_frame = inspect.currentframe().f_back.f_back
         frameinfo = inspect.getframeinfo(previous_frame)
 
-        self.callbacks.append((config, event, key, kwds, frameinfo, True))
-
-
-    def assert_not_called(self, config, event, key, **kwds):
-        previous_frame = inspect.currentframe().f_back
-        frameinfo = inspect.getframeinfo(previous_frame)
-
-        self.callbacks.append((config, event, key, kwds, frameinfo, False))
+        self.callbacks.append((config, event, key, values, frameinfo, called))
 
 
     def __enter__(self):
-        for config, event, key, kwds, frameinfo, expected in self.callbacks:
+        for config, event, key, values, frameinfo, expected in self.callbacks:
             if event == 'change':
-                kwds.setdefault('current', None)
-                kwds.setdefault('previous', config.get(key))
-                callback = ChangeCallback(**kwds)
+                values.setdefault('previous', config.get(key))
             elif event == 'delete':
-                kwds.setdefault('value', config.get(key))
-                callback = DeleteCallback(**kwds)
+                values['current'] = mle.configuration.NOT_SET
+                values.setdefault('previous', config.get(key))
+            elif event == 'add':
+                values['previous'] = mle.configuration.NOT_SET
+            elif event is None:
+                values.setdefault('current', None)
+                values.setdefault('previous', None)
             else:
                 raise ValueError('unknown event: {}'.format(event))
 
+            callback = Callback(**values)
+
             callback.frameinfo = frameinfo
-            config.add_callback(event, key, callback)
-            expected = expected and config.are_callbacks_enabled(event)
+            config.add_callback(key, callback)
+            expected = expected and config.are_callbacks_enabled()
             if expected:
                 self.expected.append((callback, frameinfo))
             else:
@@ -111,21 +83,44 @@ class CallbackChecker:
                 try:
                     assert callback.called
                 except AssertionError:
-                    raise AssertionError(self._message(frameinfo, True)) from None
+                    raise AssertionError(self._called_message(frameinfo, True)) from None
+
+                try:
+                    assert callback.current == callback.actual_current
+                except AssertionError as error:
+                    message = self._wrong_argument_message(frameinfo,
+                                                           callback.current,
+                                                           callback.actual_current)
+                    raise AssertionError(message) from None
+
+                try:
+                    assert callback.previous == callback.actual_previous
+                except AssertionError as error:
+                    message = self._wrong_argument_message(frameinfo,
+                                                           callback.previous,
+                                                           callback.actual_previous)
+                    raise AssertionError(message) from None
 
             for callback, frameinfo in self.unexpected:
                 try:
                     assert not callback.called
                 except AssertionError:
-                    raise AssertionError(self._message(frameinfo, False)) from None
+                    raise AssertionError(self._called_message(frameinfo, False)) from None
 
 
-    def _message(self, frameinfo, expected):
+    def _called_message(self, frameinfo, expected):
         frameinfo = frameinfo._asdict()
         frameinfo['code_context'] = '\n'.join(frameinfo['code_context'])
         message = 'callback was {} called \norigin: {filename}:{lineno}\n{code_context}'
         return message.format('not' if expected else 'incorrectly', **frameinfo)
 
+
+    def _wrong_argument_message(self, frameinfo, expected, actual):
+        frameinfo = frameinfo._asdict()
+        frameinfo['code_context'] = '\n'.join(frameinfo['code_context'])
+        message = ('incorrect callback argument (expected = {expected}, actual = {actual})\n'
+                  'origin: {filename}:{lineno}\n{code_context}')
+        return message.format(expected=expected, actual=actual, **frameinfo)
 
 
 
@@ -336,59 +331,9 @@ class TestConfiguration:
         config, data1, data2 = configuration
 
         config.enable_callbacks()
-        assert config.are_callbacks_enabled('change')
-        assert config.are_callbacks_enabled('delete')
         assert config.are_callbacks_enabled()
 
         config.disable_callbacks()
-        assert not config.are_callbacks_enabled('change')
-        assert not config.are_callbacks_enabled('delete')
-        assert not config.are_callbacks_enabled()
-
-        config.enable_callbacks('change', 'delete')
-        assert config.are_callbacks_enabled('delete')
-        assert config.are_callbacks_enabled('change')
-        assert config.are_callbacks_enabled()
-
-        config.disable_callbacks('change', 'delete')
-        assert not config.are_callbacks_enabled('change')
-        assert not config.are_callbacks_enabled('delete')
-        assert not config.are_callbacks_enabled()
-
-        config.enable_callbacks(['change', 'delete'])
-        assert config.are_callbacks_enabled('delete')
-        assert config.are_callbacks_enabled('change')
-        assert config.are_callbacks_enabled()
-
-        config.disable_callbacks(['change', 'delete'])
-        assert not config.are_callbacks_enabled('change')
-        assert not config.are_callbacks_enabled('delete')
-        assert not config.are_callbacks_enabled()
-
-        config.enable_callbacks('change')
-        config.enable_callbacks('delete')
-        assert config.are_callbacks_enabled('delete')
-        assert config.are_callbacks_enabled('change')
-        assert config.are_callbacks_enabled()
-
-        config.disable_callbacks('change')
-        config.disable_callbacks('delete')
-        assert not config.are_callbacks_enabled('change')
-        assert not config.are_callbacks_enabled('delete')
-        assert not config.are_callbacks_enabled()
-
-        config.enable_callbacks('change')
-        assert config.are_callbacks_enabled('change')
-        assert not config.are_callbacks_enabled()
-        config.disable_callbacks('change')
-        assert not config.are_callbacks_enabled('change')
-        assert not config.are_callbacks_enabled()
-
-        config.enable_callbacks('delete')
-        assert config.are_callbacks_enabled('delete')
-        assert not config.are_callbacks_enabled()
-        config.disable_callbacks('delete')
-        assert not config.are_callbacks_enabled('delete')
         assert not config.are_callbacks_enabled()
 
 
@@ -455,7 +400,7 @@ class TestConfiguration:
 
         callbacks = CallbackChecker()
         callbacks.assert_called(config, 'change', existing_key, current=data2[existing_key])
-        callbacks.assert_called(config, 'change', new_key, current=data2[new_key])
+        callbacks.assert_called(config, 'add', new_key, current=data2[new_key])
 
         with callbacks:
             for key, value in data2.items():
@@ -482,7 +427,7 @@ class TestConfiguration:
 
         callbacks = CallbackChecker()
         callbacks.assert_called(config, 'change', existing_key, current=data2[existing_key])
-        callbacks.assert_called(config, 'change', new_key, current=data2[new_key])
+        callbacks.assert_called(config, 'add', new_key, current=data2[new_key])
 
         #   simple update
         with callbacks:
@@ -492,8 +437,8 @@ class TestConfiguration:
 
         #   update with new keyword argument
         callbacks = CallbackChecker()
-        callbacks.assert_not_called(config, 'change', existing_key, current=data2[existing_key])
-        callbacks.assert_not_called(config, 'change', new_key, current=data2[new_key])
+        callbacks.assert_not_called(config, existing_key)
+        callbacks.assert_not_called(config, new_key)
 
         with callbacks:
             config.update(data2, extra_key=4)
@@ -503,7 +448,7 @@ class TestConfiguration:
         #   update with existing keyword argument
         callbacks = CallbackChecker()
         callbacks.assert_called(config, 'change', existing_key, current='new_existing_value')
-        callbacks.assert_not_called(config, 'change', new_key, current=data2[new_key])
+        callbacks.assert_not_called(config, new_key)
 
         with callbacks:
             config.update(data2, **{existing_key: 'new_existing_value'})
@@ -520,8 +465,7 @@ class TestConfiguration:
         assert existing_key in config
 
         callbacks = CallbackChecker()
-        callbacks.assert_called(config, 'delete', existing_key, value=data1[existing_key])
-        callbacks.assert_not_called(config, 'change', existing_key)
+        callbacks.assert_called(config, 'delete', existing_key, previous=data1[existing_key])
 
         with callbacks:
             del config[existing_key]
@@ -532,8 +476,7 @@ class TestConfiguration:
         assert new_key not in config
 
         callbacks = CallbackChecker()
-        callbacks.assert_not_called(config, 'delete', existing_key, value=data1[existing_key])
-        callbacks.assert_not_called(config, 'change', existing_key)
+        callbacks.assert_not_called(config, existing_key)
 
         with callbacks:
             with pytest.raises(KeyError):
@@ -547,14 +490,12 @@ class TestConfiguration:
         existing_key, new_key, removed_key = get_test_keys(data1, data2)
 
         callbacks = CallbackChecker()
-        callbacks.assert_called(config, 'delete', existing_key, value=data1[existing_key])
-        callbacks.assert_not_called(config, 'change', existing_key)
+        callbacks.assert_called(config, 'delete', existing_key, previous=data1[existing_key])
 
         with callbacks:
             config.clear()
 
         assert len(config) == 0
-        assert not config._delete_callbacks
         assert not config._change_callbacks
 
 
@@ -574,7 +515,7 @@ class TestConfiguration:
         assert config != data2
 
         callbacks = CallbackChecker()
-        callbacks.assert_called(config, 'change', existing_key, current=data2[existing_key])
+        callbacks.assert_called(config, 'add', existing_key, current=data2[existing_key])
 
         with callbacks:
             config.load()
@@ -601,8 +542,8 @@ class TestConfiguration:
 
         callbacks = CallbackChecker()
         callbacks.assert_called(config, 'change', existing_key, current=data2[existing_key])
-        callbacks.assert_called(config, 'change', new_key, current=data2[new_key])
-        callbacks.assert_called(config, 'delete', deleted_key, value=data1[deleted_key])
+        callbacks.assert_called(config, 'add', new_key, current=data2[new_key])
+        callbacks.assert_called(config, 'delete', deleted_key, previous=data1[deleted_key])
 
         with callbacks:
             with open(str(config.config_filepath), 'w') as file:
@@ -672,7 +613,7 @@ def unique_value(config1, config2):
 
 
 @pytest.fixture
-def unique_values(config1, config2):
+def unique_values1(config1, config2):
     max_value = max(set(config1.values()) | set(config2.values()))
     return [1 + max_value, 2 + max_value, 3 + max_value]
 
@@ -685,7 +626,7 @@ def unique_values(config1, config2):
 
 
 
-class TestConfigurationHierarchy:
+class TestTwoConfigurationChain:
     def test_contains(self, config1, config2):
         for key in config1:
             assert key in config2
@@ -764,8 +705,12 @@ class TestConfigurationHierarchy:
         key_in_config1 = key in config1.variables
 
         callbacks = CallbackChecker()
-        callbacks.assert_called(config2, 'change', key, current=value)
-        callbacks.assert_not_called(config1, 'change', key)
+        if key in config2.variables or key_in_config1:
+            callbacks.assert_called(config2, 'change', key, current=value)
+        else:
+            callbacks.assert_called(config2, 'add', key, current=value)
+
+        callbacks.assert_not_called(config1, key)
 
         with callbacks:
             config2[key] = value
@@ -810,11 +755,19 @@ class TestConfigurationHierarchy:
         key_in_config2 = key in config2.variables
 
         callbacks = CallbackChecker()
-        callbacks.assert_called(config1, 'change', key, current=value)
-        if key_in_config2:
-            callbacks.assert_not_called(config2, 'change', key)
+        if key in config1.variables:
+            callbacks.assert_called(config1, 'change', key, current=value)
         else:
-            callbacks.assert_called(config2, 'change', key, current=value)
+            callbacks.assert_called(config1, 'add', key, current=value)
+
+        if key_in_config2:
+            #callbacks.assert_not_called(config2, 'change', key)
+            callbacks.assert_not_called(config2, key)
+        else:
+            if key in config1.variables:
+                callbacks.assert_called(config2, 'change', key, current=value)
+            else:
+                callbacks.assert_called(config2, 'add', key, current=value)
 
         with callbacks:
             config1[key] = value
@@ -859,43 +812,43 @@ class TestConfigurationHierarchy:
     #   ------------------------------------------------------------------------
     #                           Child Update
     #   ------------------------------------------------------------------------
-    def test_child_update1(self, config1, config2, unique_values):
+    def test_child_update1(self, config1, config2, unique_values1):
         #   all keys in config2 and all keys not in config1
         keys = get_keys(is_in=[config1.variables, config2.variables],
-                        count=len(unique_values))
+                        count=len(unique_values1))
 
-        self.verify_child_update(config1, config2, keys, unique_values)
+        self.verify_child_update(config1, config2, keys, unique_values1)
 
 
-    def test_child_update2(self, config1, config2, unique_values):
+    def test_child_update2(self, config1, config2, unique_values1):
         #   all keys in config2 and no keys not in config1
         keys = get_keys(is_in=config2.variables, not_in=config1.variables,
-                        count=len(unique_values))
+                        count=len(unique_values1))
 
-        self.verify_child_update(config1, config2, keys, unique_values)
+        self.verify_child_update(config1, config2, keys, unique_values1)
 
 
-    def test_child_update3(self, config1, config2, unique_values):
+    def test_child_update3(self, config1, config2, unique_values1):
         #   no keys in config2 and all keys not in config1
         keys = get_keys(is_in=config1.variables, not_in=config2.variables,
-                        count=len(unique_values))
+                        count=len(unique_values1))
 
-        self.verify_child_update(config1, config2, keys, unique_values)
+        self.verify_child_update(config1, config2, keys, unique_values1)
 
 
-    def test_child_update4(self, config1, config2, unique_values):
+    def test_child_update4(self, config1, config2, unique_values1):
         #   no keys in config2 and no keys not in config1
         keys = get_keys(not_in=[config1.variables, config1.variables],
-                        count=len(unique_values))
+                        count=len(unique_values1))
 
-        self.verify_child_update(config1, config2, keys, unique_values)
+        self.verify_child_update(config1, config2, keys, unique_values1)
 
 
-    def test_child_update12(self, config1, config2, unique_values):
+    def test_child_update12(self, config1, config2, unique_values1):
         #   all keys1 in config2 and all keys1 not in config1
         #   all keys2 in config2 and no keys2 not in config1
-        count1 = len(unique_values) // 2
-        count2 = len(unique_values) - count1
+        count1 = len(unique_values1) // 2
+        count2 = len(unique_values1) - count1
 
         keys1 = get_keys(is_in=[config1.variables, config2.variables],
                          count=count1)
@@ -903,14 +856,14 @@ class TestConfigurationHierarchy:
         keys2 = get_keys(is_in=config2.variables, not_in=[config1.variables, keys1],
                          count=count2)
 
-        self.verify_child_update(config1, config2, keys1 | keys2, unique_values)
+        self.verify_child_update(config1, config2, keys1 | keys2, unique_values1)
 
 
-    def test_child_update13(self, config1, config2, unique_values):
+    def test_child_update13(self, config1, config2, unique_values1):
         #   all keys1 in config2 and all keys1 not in config1
         #   no keys in config2 and all keys not in config1
-        count1 = len(unique_values) // 2
-        count2 = len(unique_values) - count1
+        count1 = len(unique_values1) // 2
+        count2 = len(unique_values1) - count1
 
         keys1 = get_keys(is_in=[config1.variables, config2.variables],
                          count=count1)
@@ -918,14 +871,14 @@ class TestConfigurationHierarchy:
         keys2 = get_keys(is_in=config1.variables, not_in=[config2.variables, keys1],
                          count=count2)
 
-        self.verify_child_update(config1, config2, keys1 | keys2, unique_values)
+        self.verify_child_update(config1, config2, keys1 | keys2, unique_values1)
 
 
-    def test_child_update14(self, config1, config2, unique_values):
+    def test_child_update14(self, config1, config2, unique_values1):
         #   all keys1 in config2 and all keys1 not in config1
         #   no keys in config2 and no keys not in config1
-        count1 = len(unique_values) // 2
-        count2 = len(unique_values) - count1
+        count1 = len(unique_values1) // 2
+        count2 = len(unique_values1) - count1
 
         keys1 = get_keys(is_in=[config1.variables, config2.variables],
                          count=count1)
@@ -933,14 +886,14 @@ class TestConfigurationHierarchy:
         keys2 = get_keys(not_in=[config1.variables, config1.variables, keys1],
                          count=count2)
 
-        self.verify_child_update(config1, config2, keys1 | keys2, unique_values)
+        self.verify_child_update(config1, config2, keys1 | keys2, unique_values1)
 
 
-    def test_child_update23(self, config1, config2, unique_values):
+    def test_child_update23(self, config1, config2, unique_values1):
         #   all keys in config2 and no keys not in config1
         #   no keys in config2 and all keys not in config1
-        count1 = len(unique_values) // 2
-        count2 = len(unique_values) - count1
+        count1 = len(unique_values1) // 2
+        count2 = len(unique_values1) - count1
 
         keys1 = get_keys(is_in=config2.variables, not_in=config1.variables,
                          count=count1)
@@ -948,14 +901,14 @@ class TestConfigurationHierarchy:
         keys2 = get_keys(is_in=config1.variables, not_in=[config2.variables, keys1],
                          count=count2)
 
-        self.verify_child_update(config1, config2, keys1 | keys2, unique_values)
+        self.verify_child_update(config1, config2, keys1 | keys2, unique_values1)
 
 
-    def test_child_update24(self, config1, config2, unique_values):
+    def test_child_update24(self, config1, config2, unique_values1):
         #   all keys in config2 and no keys not in config1
         #   no keys in config2 and no keys not in config1
-        count1 = len(unique_values) // 2
-        count2 = len(unique_values) - count1
+        count1 = len(unique_values1) // 2
+        count2 = len(unique_values1) - count1
 
         keys1 = get_keys(is_in=config2.variables, not_in=config1.variables,
                          count=count1)
@@ -963,14 +916,14 @@ class TestConfigurationHierarchy:
         keys2 = get_keys(not_in=[config1.variables, config1.variables, keys1],
                          count=count2)
 
-        self.verify_child_update(config1, config2, keys1 | keys2, unique_values)
+        self.verify_child_update(config1, config2, keys1 | keys2, unique_values1)
 
 
-    def test_child_update34(self, config1, config2, unique_values):
+    def test_child_update34(self, config1, config2, unique_values1):
         #   no keys in config2 and all keys not in config1
         #   no keys in config2 and no keys not in config1
-        count1 = len(unique_values) // 2
-        count2 = len(unique_values) - count1
+        count1 = len(unique_values1) // 2
+        count2 = len(unique_values1) - count1
 
         keys1 = get_keys(is_in=config1.variables, not_in=config2.variables,
                          count=count1)
@@ -978,7 +931,7 @@ class TestConfigurationHierarchy:
         keys2 = get_keys(not_in=[config1.variables, config1.variables, keys1],
                          count=count2)
 
-        self.verify_child_update(config1, config2, keys1 | keys2, unique_values)
+        self.verify_child_update(config1, config2, keys1 | keys2, unique_values1)
 
 
     def verify_child_update(self, config1, config2, keys, values):
@@ -987,8 +940,12 @@ class TestConfigurationHierarchy:
 
         callbacks = CallbackChecker()
         for key, value in variables.items():
-            callbacks.assert_called(config2, 'change', key, current=value)
-            callbacks.assert_not_called(config1, 'change', key)
+            if key in config2.variables or key in config1.variables:
+                callbacks.assert_called(config2, 'change', key, current=value)
+            else:
+                callbacks.assert_called(config2, 'add', key, current=value)
+
+            callbacks.assert_not_called(config1, key)
             if key in config1.variables:
                 config1_keys.add(key)
 
@@ -1008,43 +965,43 @@ class TestConfigurationHierarchy:
     #   ------------------------------------------------------------------------
     #                           Parent Update
     #   ------------------------------------------------------------------------
-    def test_parent_update1(self, config1, config2, unique_values):
+    def test_parent_update1(self, config1, config2, unique_values1):
         #   all keys in config2 and all keys not in config1
         keys = get_keys(is_in=[config1.variables, config2.variables],
-                        count=len(unique_values))
+                        count=len(unique_values1))
 
-        self.verify_parent_update(config1, config2, keys, unique_values)
+        self.verify_parent_update(config1, config2, keys, unique_values1)
 
 
-    def test_parent_update2(self, config1, config2, unique_values):
+    def test_parent_update2(self, config1, config2, unique_values1):
         #   all keys in config2 and no keys not in config1
         keys = get_keys(is_in=config2.variables, not_in=config1.variables,
-                        count=len(unique_values))
+                        count=len(unique_values1))
 
-        self.verify_parent_update(config1, config2, keys, unique_values)
+        self.verify_parent_update(config1, config2, keys, unique_values1)
 
 
-    def test_parent_update3(self, config1, config2, unique_values):
+    def test_parent_update3(self, config1, config2, unique_values1):
         #   no keys in config2 and all keys not in config1
         keys = get_keys(is_in=config1.variables, not_in=config2.variables,
-                        count=len(unique_values))
+                        count=len(unique_values1))
 
-        self.verify_parent_update(config1, config2, keys, unique_values)
+        self.verify_parent_update(config1, config2, keys, unique_values1)
 
 
-    def test_parent_update4(self, config1, config2, unique_values):
+    def test_parent_update4(self, config1, config2, unique_values1):
         #   no keys in config2 and no keys not in config1
         keys = get_keys(not_in=[config1.variables, config1.variables],
-                        count=len(unique_values))
+                        count=len(unique_values1))
 
-        self.verify_parent_update(config1, config2, keys, unique_values)
+        self.verify_parent_update(config1, config2, keys, unique_values1)
 
 
-    def test_parent_update12(self, config1, config2, unique_values):
+    def test_parent_update12(self, config1, config2, unique_values1):
         #   all keys1 in config2 and all keys1 not in config1
         #   all keys2 in config2 and no keys2 not in config1
-        count1 = len(unique_values) // 2
-        count2 = len(unique_values) - count1
+        count1 = len(unique_values1) // 2
+        count2 = len(unique_values1) - count1
 
         keys1 = get_keys(is_in=[config1.variables, config2.variables],
                          count=count1)
@@ -1052,14 +1009,14 @@ class TestConfigurationHierarchy:
         keys2 = get_keys(is_in=config2.variables, not_in=[config1.variables, keys1],
                          count=count2)
 
-        self.verify_parent_update(config1, config2, keys1 | keys2, unique_values)
+        self.verify_parent_update(config1, config2, keys1 | keys2, unique_values1)
 
 
-    def test_parent_update13(self, config1, config2, unique_values):
+    def test_parent_update13(self, config1, config2, unique_values1):
         #   all keys1 in config2 and all keys1 not in config1
         #   no keys in config2 and all keys not in config1
-        count1 = len(unique_values) // 2
-        count2 = len(unique_values) - count1
+        count1 = len(unique_values1) // 2
+        count2 = len(unique_values1) - count1
 
         keys1 = get_keys(is_in=[config1.variables, config2.variables],
                          count=count1)
@@ -1067,14 +1024,14 @@ class TestConfigurationHierarchy:
         keys2 = get_keys(is_in=config1.variables, not_in=[config2.variables, keys1],
                          count=count2)
 
-        self.verify_parent_update(config1, config2, keys1 | keys2, unique_values)
+        self.verify_parent_update(config1, config2, keys1 | keys2, unique_values1)
 
 
-    def test_parent_update14(self, config1, config2, unique_values):
+    def test_parent_update14(self, config1, config2, unique_values1):
         #   all keys1 in config2 and all keys1 not in config1
         #   no keys in config2 and no keys not in config1
-        count1 = len(unique_values) // 2
-        count2 = len(unique_values) - count1
+        count1 = len(unique_values1) // 2
+        count2 = len(unique_values1) - count1
 
         keys1 = get_keys(is_in=[config1.variables, config2.variables],
                          count=count1)
@@ -1082,14 +1039,14 @@ class TestConfigurationHierarchy:
         keys2 = get_keys(not_in=[config1.variables, config1.variables, keys1],
                          count=count2)
 
-        self.verify_parent_update(config1, config2, keys1 | keys2, unique_values)
+        self.verify_parent_update(config1, config2, keys1 | keys2, unique_values1)
 
 
-    def test_parent_update23(self, config1, config2, unique_values):
+    def test_parent_update23(self, config1, config2, unique_values1):
         #   all keys in config2 and no keys not in config1
         #   no keys in config2 and all keys not in config1
-        count1 = len(unique_values) // 2
-        count2 = len(unique_values) - count1
+        count1 = len(unique_values1) // 2
+        count2 = len(unique_values1) - count1
 
         keys1 = get_keys(is_in=config2.variables, not_in=config1.variables,
                          count=count1)
@@ -1097,14 +1054,14 @@ class TestConfigurationHierarchy:
         keys2 = get_keys(is_in=config1.variables, not_in=[config2.variables, keys1],
                          count=count2)
 
-        self.verify_parent_update(config1, config2, keys1 | keys2, unique_values)
+        self.verify_parent_update(config1, config2, keys1 | keys2, unique_values1)
 
 
-    def test_parent_update24(self, config1, config2, unique_values):
+    def test_parent_update24(self, config1, config2, unique_values1):
         #   all keys in config2 and no keys not in config1
         #   no keys in config2 and no keys not in config1
-        count1 = len(unique_values) // 2
-        count2 = len(unique_values) - count1
+        count1 = len(unique_values1) // 2
+        count2 = len(unique_values1) - count1
 
         keys1 = get_keys(is_in=config2.variables, not_in=config1.variables,
                          count=count1)
@@ -1112,14 +1069,14 @@ class TestConfigurationHierarchy:
         keys2 = get_keys(not_in=[config1.variables, config1.variables, keys1],
                          count=count2)
 
-        self.verify_parent_update(config1, config2, keys1 | keys2, unique_values)
+        self.verify_parent_update(config1, config2, keys1 | keys2, unique_values1)
 
 
-    def test_parent_update34(self, config1, config2, unique_values):
+    def test_parent_update34(self, config1, config2, unique_values1):
         #   no keys in config2 and all keys not in config1
         #   no keys in config2 and no keys not in config1
-        count1 = len(unique_values) // 2
-        count2 = len(unique_values) - count1
+        count1 = len(unique_values1) // 2
+        count2 = len(unique_values1) - count1
 
         keys1 = get_keys(is_in=config1.variables, not_in=config2.variables,
                          count=count1)
@@ -1127,7 +1084,7 @@ class TestConfigurationHierarchy:
         keys2 = get_keys(not_in=[config1.variables, config1.variables, keys1],
                          count=count2)
 
-        self.verify_parent_update(config1, config2, keys1 | keys2, unique_values)
+        self.verify_parent_update(config1, config2, keys1 | keys2, unique_values1)
 
 
     def verify_parent_update(self, config1, config2, keys, values):
@@ -1135,11 +1092,18 @@ class TestConfigurationHierarchy:
 
         callbacks = CallbackChecker()
         for key, value in variables.items():
-            callbacks.assert_called(config1, 'change', key, current=value)
-            if key in config2.variables:
-                callbacks.assert_not_called(config2, 'change', key)
+            if key in config1.variables:
+                callbacks.assert_called(config1, 'change', key, current=value)
             else:
-                callbacks.assert_called(config2, 'change', key, current=value)
+                callbacks.assert_called(config1, 'add', key, current=value)
+
+            if key in config2.variables:
+                callbacks.assert_not_called(config2, key)
+            else:
+                if key in config1.variables:
+                    callbacks.assert_called(config2, 'change', key, current=value)
+                else:
+                    callbacks.assert_called(config2, 'add', key, current=value)
 
         with callbacks:
             config1.update(variables)
@@ -1185,16 +1149,14 @@ class TestConfigurationHierarchy:
         key_in_config1 = key in config1.variables
 
         callbacks = CallbackChecker()
-        callbacks.assert_not_called(config1, 'delete', key)
-        callbacks.assert_not_called(config1, 'change', key)
+        callbacks.assert_not_called(config1, key)
         if key in config2.variables:
             if key_in_config1:
                 callbacks.assert_called(config2, 'change', key, current=config1.variables[key])
             else:
                 callbacks.assert_called(config2, 'delete', key)
         else:
-            callbacks.assert_not_called(config2, 'change', key)
-            callbacks.assert_not_called(config2, 'delete', key)
+            callbacks.assert_not_called(config2, key)
 
         with callbacks:
             if key in config2.variables:
@@ -1247,21 +1209,15 @@ class TestConfigurationHierarchy:
         callbacks = CallbackChecker()
         if key_in_config1:
             callbacks.assert_called(config1, 'delete', key)
-            callbacks.assert_not_called(config1, 'change', key)
 
             if key_in_config2:
-                callbacks.assert_not_called(config2, 'change', key)
-                callbacks.assert_not_called(config2, 'delete', key)
+                callbacks.assert_not_called(config2, key)
             else:
-                callbacks.assert_not_called(config2, 'change', key)
                 callbacks.assert_called(config2, 'delete', key)
 
         else:
-            callbacks.assert_not_called(config1, 'delete', key)
-            callbacks.assert_not_called(config1, 'change', key)
-
-            callbacks.assert_not_called(config2, 'change', key)
-            callbacks.assert_not_called(config2, 'delete', key)
+            callbacks.assert_not_called(config1, key)
+            callbacks.assert_not_called(config2, key)
 
 
         with callbacks:
@@ -1288,8 +1244,7 @@ class TestConfigurationHierarchy:
         callbacks = CallbackChecker()
 
         for key in config1.variables:
-            callbacks.assert_not_called(config1, 'delete', key)
-            callbacks.assert_not_called(config1, 'change', key)
+            callbacks.assert_not_called(config1, key)
 
         for key in config2.variables:
             if key in config1.variables:
@@ -1312,20 +1267,15 @@ class TestConfigurationHierarchy:
 
         for key in config1.variables:
             callbacks.assert_called(config1, 'delete', key)
-            callbacks.assert_not_called(config1, 'change', key)
 
             if key in config2.variables:
-                callbacks.assert_not_called(config2, 'delete', key)
-                callbacks.assert_not_called(config2, 'change', key)
+                callbacks.assert_not_called(config2, key)
             else:
                 callbacks.assert_called(config2, 'delete', key)
-                callbacks.assert_not_called(config2, 'change', key)
 
         for key in config2.variables:
             if key not in config1.variables:
-                callbacks.assert_not_called(config2, 'delete', key)
-                callbacks.assert_not_called(config2, 'change', key)
-
+                callbacks.assert_not_called(config2, key)
 
         with callbacks:
             config1.clear()
@@ -1335,34 +1285,6 @@ class TestConfigurationHierarchy:
         assert config2 == config2.variables
 
 
-
-
-
-
-    #def test_load(self, configuration):
-
-        #existing_key, new_key, removed_key = get_test_keys(data1, data2)
-
-        #config.autosave = False
-
-        #config.clear()
-        #config.update(data2)
-        #assert config == data2
-
-        #config.save()
-        #config.clear()
-        #assert config != data2
-
-        #on_changed = ChangeCallback(current=data2[existing_key], previous=None)
-        #config.add_callback('change', existing_key, on_changed)
-
-        #config.load()
-
-        #assert config == data2
-        #if config.are_callbacks_enabled():
-            #assert on_changed.called
-        #else:
-            #assert not on_changed.called
 
 
 
@@ -1417,6 +1339,7 @@ def is_change_propagated(key, from_config, to_config):
         return True
     else:
         return False
+
 
 
 def is_delete_propagated(key, from_config, to_config):
@@ -1551,8 +1474,8 @@ def mix_keys(key_partition, mixture_size, number_mixtures):
 
 
 
-#@pytest.fixture(params=(11494, 23801, 4084, 31291, 26266, 7183))
-@pytest.fixture(params=(11494,))
+@pytest.fixture(params=(11494, 23801, 4084, 31291, 26266, 7183))
+#@pytest.fixture(params=(11494,))
 def chained_configuration(tmpdir, request):
     random.seed(request.param)
 
@@ -1860,7 +1783,10 @@ class TestChain:
 
 
     def _prepare_for_set(self, config, key, value, configs, callbacks, propagated):
-        callbacks.assert_called(config, 'change', key, current=value)
+        if key in config:
+            callbacks.assert_called(config, 'change', key, current=value)
+        else:
+            callbacks.assert_called(config, 'add', key, current=value)
 
         for other in others(config, configs):
             #   remember which configurations already
@@ -1870,9 +1796,12 @@ class TestChain:
             if is_change_propagated(key, from_config=config, to_config=other):
                 #   remember which change should be propagated down the chain
                 propagated.add((key, id(config), id(other)))
-                callbacks.assert_called(other, 'change', key, current=value)
+                if key in other:
+                    callbacks.assert_called(other, 'change', key, current=value)
+                else:
+                    callbacks.assert_called(other, 'add', key, current=value)
             else:
-                callbacks.assert_not_called(other, 'change', key)
+                callbacks.assert_not_called(other, key)
 
 
     def _verify_set(self, config, key, value, configs, propagated):
@@ -1924,64 +1853,6 @@ class TestChain:
                         del config.expected_value
 
 
-
-
-    def _prepare_for_delete(self, config, key, configs, callbacks, propagated, changed):
-        if key in config.variables:
-            config.had_key = True
-
-            if is_change_on_delete(key, from_config=config, to_config=config):
-                value = value_after_delete(key, config)
-                config.expected_value = value
-                callbacks.assert_called(config, 'change', key, current=value)
-
-            for other in others(config, configs):
-                #   remember which configurations already
-                #   had the key before deleting
-                other.had_key = (key in other.variables)
-
-                if is_delete_propagated(key, from_config=config, to_config=other):
-                    #   remember which change should be propagated down the chain
-                    propagated.add((key, id(config), id(other)))
-                    callbacks.assert_called(other, 'delete', key)
-                else:
-                    callbacks.assert_not_called(other, 'delete', key)
-
-                if is_change_on_delete(key, from_config=config, to_config=other):
-                    #   remember which change should be propagated down the chain
-                    value = value_after_delete(key, config)
-                    changed[(key, id(config), id(other))] = value
-                    callbacks.assert_called(other, 'change', key, current=value)
-                else:
-                    callbacks.assert_not_called(other, 'change', key)
-
-        else:
-            config.had_key = False
-            for other in others(config, configs):
-                other.had_key = (key in other.variables)
-                callbacks.assert_not_called(other, 'delete', key)
-                callbacks.assert_not_called(other, 'change', key)
-
-
-    def _verify_delete(self, config, key, configs, propagated, changed):
-        assert key not in config.variables
-
-        for other in others(config, configs):
-            assert other.had_key == (key in other.variables)
-
-            #   if the delete event was propagated down the chain
-            if (key, id(config), id(other)) in propagated:
-                assert key not in other
-
-            if (key, id(config), id(other)) in changed:
-                assert key in other
-                assert other[key] == changed[(key, id(config), id(other))]
-
-
-
-
-
-
     #   ------------------------------------------------------------------------
     #                           Clear
     #   ------------------------------------------------------------------------
@@ -2016,6 +1887,53 @@ class TestChain:
 
 
 
+
+
+    def _prepare_for_delete(self, config, key, configs, callbacks, propagated, changed):
+        if key in config.variables:
+            config.had_key = True
+
+            if is_change_on_delete(key, from_config=config, to_config=config):
+                value = value_after_delete(key, config)
+                config.expected_value = value
+                callbacks.assert_called(config, 'change', key, current=value)
+
+            for other in others(config, configs):
+                #   remember which configurations already
+                #   had the key before deleting
+                other.had_key = (key in other.variables)
+
+                if is_delete_propagated(key, from_config=config, to_config=other):
+                    #   remember which change should be propagated down the chain
+                    propagated.add((key, id(config), id(other)))
+                    callbacks.assert_called(other, 'delete', key)
+
+                if is_change_on_delete(key, from_config=config, to_config=other):
+                    #   remember which change should be propagated down the chain
+                    value = value_after_delete(key, config)
+                    changed[(key, id(config), id(other))] = value
+                    callbacks.assert_called(other, 'change', key, current=value)
+
+        else:
+            config.had_key = False
+            for other in others(config, configs):
+                other.had_key = (key in other.variables)
+                callbacks.assert_not_called(other, key)
+
+
+    def _verify_delete(self, config, key, configs, propagated, changed):
+        assert key not in config.variables
+
+        for other in others(config, configs):
+            assert other.had_key == (key in other.variables)
+
+            #   if the delete event was propagated down the chain
+            if (key, id(config), id(other)) in propagated:
+                assert key not in other
+
+            if (key, id(config), id(other)) in changed:
+                assert key in other
+                assert other[key] == changed[(key, id(config), id(other))]
 
 
 

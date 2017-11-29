@@ -1,32 +1,65 @@
 #!/usr/bin/python3
 # PYTHON_ARGCOMPLETE_OK
-
 import argparse
-import os.path
-import glob
-import warnings
+import pathlib
+import shutil
 
 import mle
-import mle.utils
+import mle.cmdline
 import mle.error
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    config_parser = mle.cmdline.config_file_parser(purpose='remove')
+    parser = argparse.ArgumentParser(description='Remove an environment, '
+                                                 'model environment, '
+                                                 'or configuration file',
+                                     parents=[config_parser])
 
-    parser.add_argument('names',
-                        nargs=argparse.REMAINDER)
+    parser.add_argument('environ',
+                        nargs='?',
+                        type=pathlib.Path,
+                        default=None,
+                        help='path to the environment')
 
-    mle.utils.autocomplete(parser)
+    parser.add_argument('-d', '--directory',
+                        dest='delete_directory',
+                        action='store_true',
+                        help='delete the environment or model environment directory')
+
+    parser.add_argument('-f', '--force',
+                        dest='enforce_script',
+                        action='store_false',
+                        help='remove even if the on_delete script fails')
+
+    mle.cmdline.autocomplete(parser)
     args = parser.parse_args()
 
     try:
-        for name in args.names:
-            name = mle.utils.clean_name(name)
-            try:
-                mle.Environment(name).destroy()
-            except mle.EnvironmentNotFoundError as error:
-                mle.error.handle(error)
+        if args.config == 'local':
+            if args.environ is None:
+                args.environ = pathlib.Path.cwd()
+            path = mle.Environment.find(args.environ)
+            mle.Environment.remove(path, enforce_delete_script=args.enforce_script)
+            if args.delete_directory:
+                shutil.rmtree(str(path))
+
+        elif args.config == 'global':
+            path = mle.find_global_configuration(args.environ)
+            path.unlink()
+
+        elif args.config == 'system':
+            path = mle.find_system_configuration()
+            path.unlink()
+
+        elif args.config == 'model':
+            environ = mle.Environment(args.environ)
+            environ.discard_model(args.model,
+                                  delete_directory=args.delete_directory,
+                                  enforce_delete_script=args.enforce_script)
+
+        elif args.config == 'file':
+            args.config_file.unlink()
 
     except (KeyboardInterrupt, BrokenPipeError):
         pass

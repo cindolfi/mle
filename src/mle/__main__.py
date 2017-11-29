@@ -4,8 +4,6 @@ import argparse
 import subprocess
 import contextlib
 
-import mle.error
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -32,6 +30,7 @@ def main():
     try:
         return run_command('mle-' + args.command, args.arguments)
     except Exception as error:
+        import mle.error
         return mle.error.handle(error)
 
 

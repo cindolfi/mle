@@ -1,43 +1,59 @@
 #!/usr/bin/python3
 # PYTHON_ARGCOMPLETE_OK
-
 import argparse
+import pathlib
 
 import mle
+import mle.cmdline
+import mle.error
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    config_parser = mle.cmdline.config_file_parser(purpose='create')
+    parser = argparse.ArgumentParser(description='Create an environment, '
+                                                 'model environment, '
+                                                 'or configuration file',
+                                     parents=[config_parser])
 
-    parser.add_argument('name',
-                        type=mle.utils.clean_name)
+    parser.add_argument('environ',
+                        nargs='?',
+                        type=pathlib.Path,
+                        default=None,
+                        help='path to the environment')
 
-    parser.add_argument('-a', '--activate',
-                        action='store_true')
+    parser.add_argument('-f', '--force',
+                        dest='enforce_script',
+                        action='store_false',
+                        help='create even if the on_create script fails')
 
-    mle.utils.autocomplete(parser)
+    mle.cmdline.autocomplete(parser)
     args = parser.parse_args()
 
     try:
-        try:
-            mle.GlobalConfiguration.create()
-        except mle.ConfigurationExistsError:
-            pass
+        if args.config == 'local':
+            if args.environ is None:
+                args.environ = pathlib.Path.cwd()
+            mle.Environment.create(args.environ,
+                                   enforce_create_script=args.enforce_script)
 
-        try:
-            environ = mle.Environment.create(args.name)
-        except mle.EnvironmentExistsError as error:
-            return mle.error.handle(error)
+        elif args.config == 'global':
+            mle.create_global_configuration(args.environ)
 
-        if args.activate:
-            try:
-                environ.activate()
-            except Exception as error:
-                environ.destroy()
-                return mle.error.handle(error)
+        elif args.config == 'system':
+            mle.create_system_configuration()
+
+        elif args.config == 'model':
+            environ = mle.Environment(args.environ)
+            environ.create_model(args.config_model,
+                                 enforce_create_script=args.enforce_script)
+
+        elif args.config == 'file':
+            mle.create_configuration(args.config_file)
+
     except (KeyboardInterrupt, BrokenPipeError):
         pass
     except Exception as error:
+        raise
         return mle.error.handle(error)
 
 

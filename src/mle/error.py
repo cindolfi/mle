@@ -1,48 +1,54 @@
 
-import sys
-
-from . import environment
-from . import utils
-
 
 UNKNOWN_ERROR = -1
-NO_CURRENT_MODEL = -2
-MODEL_NOT_FOUND = -3
-ENVIRONMENT_NOT_FOUND = -4
-ENVIRONMENT_EXISTS = -5
-ENVIRONMENT_NOT_ACTIVE = -6
-METADATA_NOT_FOUND = -7
-METADATA_EXISTS = -8
-TENSORBOARD = -9
+MODEL_NOT_FOUND = -2
+ENVIRONMENT_NOT_FOUND = -3
+ENVIRONMENT_EXISTS = -4
+METADATA_NOT_FOUND = -5
+METADATA_EXISTS = -6
+TENSORBOARD = -7
+KEY_ERROR = -8
+VALUE_ERROR = -9
+TYPE_ERROR = -10
 
 
 def print_error(*items):
-    print(utils.colored(*items, color='red'), file=sys.stderr)
+    import sys
+    from . import colored
+    colored.print(*items, color='red', file=sys.stderr)
+
 
 def handle(error):
-    if isinstance(error, environment.NoCurrentModelError):
-        errno = NO_CURRENT_MODEL
-    elif isinstance(error, environment.ModelNotFoundError):
+    import subprocess
+    from . import environment
+
+    if isinstance(error, environment.ModelNotFoundError):
         errno = MODEL_NOT_FOUND
     elif isinstance(error, environment.EnvironmentNotFoundError):
         errno = ENVIRONMENT_NOT_FOUND
     elif isinstance(error, environment.EnvironmentExistsError):
         errno = ENVIRONMENT_EXISTS
-    elif isinstance(error, environment.EnvironmentNotActiveError):
-        errno = ENVIRONMENT_NOT_ACTIVE
     elif isinstance(error, environment.ConfigurationNotFoundError):
         errno = METADATA_NOT_FOUND
     elif isinstance(error, environment.ConfigurationExistsError):
         errno = METADATA_EXISTS
     elif isinstance(error, environment.tensorboard.TensorBoardError):
         errno = TENSORBOARD
+    elif isinstance(error, KeyError):
+        errno = KEY_ERROR
+    elif isinstance(error, ValueError):
+        errno = VALUE_ERROR
+    elif isinstance(error, TypeError):
+        errno = TYPE_ERROR
+    elif isinstance(error, subprocess.CalledProcessError):
+        errno = error.returncode
     else:
         try:
             errno = error.errno
         except AttributeError:
-            errno = errno.UNKNOWN_ERROR
+            errno = UNKNOWN_ERROR
 
-    if errno >= UNKNOWN_ERROR and not isinstance(error, OSError):
+    if errno >= UNKNOWN_ERROR and not isinstance(error, (OSError, subprocess.CalledProcessError)):
         print_error(type(error))
     print_error(error)
 
